@@ -45,4 +45,4 @@ python sup_contrasive_hubert.py
 echo "===== [4/4] Push models to HuggingFace ====="
 python push_to_hugg.py
 
-echo "🎉 All steps completed successfully!"
+echo "All steps completed successfully!"
