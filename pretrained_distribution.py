@@ -148,8 +148,8 @@ class LexicalSoundDataset(Dataset):
             }
 
 
-def create_dataloaders(dataset_dir, batch_size=32, num_workers=0, train_split=0.8):
-    """Create train and validation dataloaders"""
+def create_dataloaders(dataset_dir, batch_size=32, num_workers=0, train_split=0.8, use_cuda=False):
+    """Create train and validation dataloaders with CUDA optimization"""
     
     dataset = LexicalSoundDataset(dataset_dir)
     
@@ -160,19 +160,21 @@ def create_dataloaders(dataset_dir, batch_size=32, num_workers=0, train_split=0.
         dataset, [train_size, val_size]
     )
     
-    # Create dataloaders
+    # Create dataloaders with pin_memory for faster GPU transfer
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=num_workers
+        num_workers=num_workers,
+        pin_memory=use_cuda  # Enable pin_memory when using CUDA
     )
     
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=num_workers
+        num_workers=num_workers,
+        pin_memory=use_cuda
     )
     
     return train_loader, val_loader, dataset
@@ -184,8 +186,17 @@ def create_dataloaders(dataset_dir, batch_size=32, num_workers=0, train_split=0.
 OUTPUT_DIR = 'pretrained_distribution_graphs'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Set device
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# Set device with detailed info
+if torch.cuda.is_available():
+    device = torch.device('cuda')
+    print(f"🚀 CUDA is available!")
+    print(f"   Device: {torch.cuda.get_device_name(0)}")
+    print(f"   CUDA Version: {torch.version.cuda}")
+    print(f"   Total Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
+else:
+    device = torch.device('cpu')
+    print(f"⚠️  CUDA not available, using CPU")
+
 print(f"Using device: {device}")
 
 # Tone mapping and colors
@@ -212,10 +223,10 @@ TONE_COLORS = {
 
 
 # ============================================================================
-# Feature Extractors
+# Feature Extractors with CUDA Support
 # ============================================================================
 class Wav2Vec2FeatureExtractor:
-    """Extract features using pretrained Wav2Vec2 model"""
+    """Extract features using pretrained Wav2Vec2 model with CUDA support"""
     
     def __init__(self, model_name='facebook/wav2vec2-base', device='cpu'):
         print(f"\nLoading Wav2Vec2 model: {model_name}")
@@ -227,6 +238,11 @@ class Wav2Vec2FeatureExtractor:
         self.model = Wav2Vec2Model.from_pretrained(model_name)
         self.model.to(device)
         self.model.eval()
+        
+        # Enable half precision if using CUDA (faster inference)
+        if device.type == 'cuda':
+            self.model = self.model.half()
+            print(f"✓ Model loaded on GPU with half precision (FP16)")
         
         print("✓ Wav2Vec2 model loaded successfully!")
     
@@ -248,6 +264,10 @@ class Wav2Vec2FeatureExtractor:
             # Move to device
             input_values = inputs.input_values.to(self.device)
             
+            # Use half precision on CUDA
+            if self.device.type == 'cuda':
+                input_values = input_values.half()
+            
             # Forward pass
             outputs = self.model(input_values)
             
@@ -255,11 +275,15 @@ class Wav2Vec2FeatureExtractor:
             hidden_states = outputs.last_hidden_state
             features = hidden_states.mean(dim=1)  # [batch_size, hidden_dim]
             
+            # Convert back to float32 for compatibility
+            if self.device.type == 'cuda':
+                features = features.float()
+            
             return features.cpu().numpy()
 
 
 class HuBERTFeatureExtractor:
-    """Extract features using pretrained HuBERT model"""
+    """Extract features using pretrained HuBERT model with CUDA support"""
     
     def __init__(self, model_name='facebook/hubert-base-ls960', device='cpu'):
         print(f"\nLoading HuBERT model: {model_name}")
@@ -272,6 +296,11 @@ class HuBERTFeatureExtractor:
         self.model = HubertModel.from_pretrained(model_name)
         self.model.to(device)
         self.model.eval()
+        
+        # Enable half precision if using CUDA (faster inference)
+        if device.type == 'cuda':
+            self.model = self.model.half()
+            print(f"✓ Model loaded on GPU with half precision (FP16)")
         
         print("✓ HuBERT model loaded successfully!")
     
@@ -293,12 +322,20 @@ class HuBERTFeatureExtractor:
             # Move to device
             input_values = inputs.input_values.to(self.device)
             
+            # Use half precision on CUDA
+            if self.device.type == 'cuda':
+                input_values = input_values.half()
+            
             # Forward pass
             outputs = self.model(input_values)
             
             # Get last hidden state and average pool over time
             hidden_states = outputs.last_hidden_state
             features = hidden_states.mean(dim=1)  # [batch_size, hidden_dim]
+            
+            # Convert back to float32 for compatibility
+            if self.device.type == 'cuda':
+                features = features.float()
             
             return features.cpu().numpy()
 
@@ -308,7 +345,7 @@ class HuBERTFeatureExtractor:
 # ============================================================================
 def extract_all_features(dataloader, extractor, max_batches=None):
     """
-    Extract features from all samples in the dataloader
+    Extract features from all samples in the dataloader with GPU acceleration
     
     Args:
         dataloader: PyTorch DataLoader
@@ -331,6 +368,11 @@ def extract_all_features(dataloader, extractor, max_batches=None):
         print(f"Processing first {max_batches} batches only")
     
     batch_count = 0
+    
+    # Show GPU memory if available
+    if torch.cuda.is_available():
+        print(f"Initial GPU memory: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+    
     for batch in tqdm(dataloader, desc="Processing batches"):
         if max_batches and batch_count >= max_batches:
             break
@@ -341,7 +383,7 @@ def extract_all_features(dataloader, extractor, max_batches=None):
         tone_names = batch['tone_name']
         tts_models = batch['tts_model']
         
-        # Extract features
+        # Extract features (automatically uses GPU if available)
         features = extractor.extract_features(waveforms)
         
         all_features.append(features)
@@ -350,6 +392,15 @@ def extract_all_features(dataloader, extractor, max_batches=None):
         all_tts_models.extend(tts_models)
         
         batch_count += 1
+        
+        # Clear GPU cache periodically
+        if torch.cuda.is_available() and batch_count % 10 == 0:
+            torch.cuda.empty_cache()
+    
+    # Show final GPU memory
+    if torch.cuda.is_available():
+        print(f"Peak GPU memory: {torch.cuda.max_memory_allocated() / 1024**2:.2f} MB")
+        torch.cuda.reset_peak_memory_stats()
     
     # Concatenate all features
     all_features = np.vstack(all_features)
@@ -403,7 +454,7 @@ def visualize_tsne(features, labels, tone_names_list, save_path, model_name=''):
         )
     
     title = f'Vietnamese Tone Distribution - t-SNE Visualization\n{model_name}'
-    plt.title(title, fontsize=16, fontweight='bold', pad=20)
+    plt.title(title, fontsize=20, fontweight='bold', pad=20)
     plt.xlabel('t-SNE Dimension 1', fontsize=18)
     plt.ylabel('t-SNE Dimension 2', fontsize=18)
     plt.legend(title='Tone', fontsize=16, title_fontsize=16,
@@ -508,9 +559,11 @@ def visualize_pretrained_features(dataloader, max_batches=16):
     save_results(wav2vec_features, labels, tone_names, tts_models, 
                  wav2vec_tsne, 'wav2vec2')
     
-    # Clean up
+    # Clean up GPU memory
     del wav2vec_extractor
-    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        print(f"✓ GPU memory cleared")
     
     # ========================================================================
     # 2. HuBERT Analysis
@@ -539,9 +592,11 @@ def visualize_pretrained_features(dataloader, max_batches=16):
     save_results(hubert_features, labels, tone_names, tts_models, 
                  hubert_tsne, 'hubert')
     
-    # Clean up
+    # Clean up GPU memory
     del hubert_extractor
-    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        print(f"✓ GPU memory cleared")
     
     # ========================================================================
     # Summary
@@ -582,12 +637,13 @@ if __name__ == '__main__':
         print("Please make sure the dataset directory exists.")
         exit(1)
     
-    # Create dataloaders
+    # Create dataloaders with CUDA optimization
     print(f"\nLoading dataset from: {DATASET_DIR}")
     train_loader, val_loader, dataset = create_dataloaders(
         dataset_dir=DATASET_DIR,
         batch_size=BATCH_SIZE,
-        num_workers=NUM_WORKERS
+        num_workers=NUM_WORKERS,
+        use_cuda=torch.cuda.is_available()
     )
     
     print(f"Dataset size: {len(dataset)}")

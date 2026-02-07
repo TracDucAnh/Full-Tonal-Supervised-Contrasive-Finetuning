@@ -1,0 +1,1 @@
+# This code is responsible for pushing the checkpoints of finetuned Wav2vec and HuBERT to HuggingFace model hub.
