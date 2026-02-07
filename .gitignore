@@ -1,0 +1,17 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Env
+.env
+
+# Model / checkpoints (nếu có)
+*.pt
+*.ckpt
+
+# data
+dataset/
