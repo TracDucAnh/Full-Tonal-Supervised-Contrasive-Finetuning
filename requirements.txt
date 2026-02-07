@@ -10,3 +10,5 @@ soundfile
 scikit-learn
 tqdm
 protobuf
+huggingface_hub
+python-dotenv

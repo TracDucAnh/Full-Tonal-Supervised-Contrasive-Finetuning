@@ -17,3 +17,5 @@ __pycache__/
 dataset/
 exploration_results/
 pretrained_distribution_graphs/
+HuBERT_finetuned/
+Wav2Vec_finetuned/
