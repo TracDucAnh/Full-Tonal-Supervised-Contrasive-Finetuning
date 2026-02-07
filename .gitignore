@@ -15,7 +15,7 @@ __pycache__/
 
 # data
 dataset/
-exploration_results/
-pretrained_distribution_graphs/
-HuBERT_finetuned/
-Wav2Vec_finetuned/
+# exploration_results/
+# pretrained_distribution_graphs/
+# HuBERT_finetuned/
+# Wav2Vec_finetuned/
