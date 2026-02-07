@@ -1,0 +1,604 @@
+import os
+import warnings
+
+import torch
+import torchaudio
+import numpy as np
+import pandas as pd
+
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
+
+from transformers import Wav2Vec2Model, Wav2Vec2Processor, HubertModel
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.manifold import TSNE
+
+from tqdm import tqdm
+
+warnings.filterwarnings('ignore')
+
+
+class LexicalSoundDataset(Dataset):
+    """Dataset for supervised contrastive learning of lexical tones"""
+    
+    def __init__(self, dataset_dir, sr=16000, duration=1.0):
+        self.dataset_dir = dataset_dir
+        self.sr = sr
+        self.duration = duration
+        self.samples = []
+        
+        # Folder -> label mapping
+        self.tone_map = {
+            'sắc': 0,
+            'huyền': 1,
+            'hỏi': 2,
+            'ngã': 3,
+            'nặng': 4,
+            'không dấu': 5
+        }
+        
+        self._load_samples()
+    
+    def _is_valid_wav(self, wav_path):
+        """Check if WAV file is valid and can be loaded"""
+        try:
+            # Try to load just the metadata (fast check)
+            info = torchaudio.info(wav_path)
+            # Additional check: make sure it has valid sample rate and channels
+            if info.sample_rate <= 0 or info.num_channels <= 0:
+                return False
+            return True
+        except Exception as e:
+            # If any error occurs, the file is invalid
+            return False
+    
+    def _load_samples(self):
+        """Load all .wav files from TTS model folders"""
+        total_files = 0
+        valid_files = 0
+        invalid_files = 0
+        
+        print("\nScanning dataset and checking WAV files...")
+        
+        # Iterate through TTS model folders (edge-tts, google-tts, etc.)
+        for tts_model in os.listdir(self.dataset_dir):
+            tts_path = os.path.join(self.dataset_dir, tts_model)
+            if not os.path.isdir(tts_path):
+                continue
+            
+            # Iterate through tone folders inside each TTS model
+            for tone_name, label in self.tone_map.items():
+                tone_dir = os.path.join(tts_path, tone_name)
+                if not os.path.exists(tone_dir):
+                    continue
+                
+                # Load all .wav files from tone folder
+                for filename in os.listdir(tone_dir):
+                    if filename.endswith('.wav'):
+                        wav_path = os.path.join(tone_dir, filename)
+                        total_files += 1
+                        
+                        # Check if file is valid before adding
+                        if self._is_valid_wav(wav_path):
+                            self.samples.append((wav_path, label, tone_name, tts_model))
+                            valid_files += 1
+                        else:
+                            invalid_files += 1
+                            if invalid_files <= 10:  # Only print first 10 invalid files
+                                print(f"  ⚠ Skipping invalid file: {wav_path}")
+        
+        print(f"\n{'='*70}")
+        print(f"Dataset scan completed:")
+        print(f"  Total WAV files found: {total_files}")
+        print(f"  Valid files: {valid_files}")
+        print(f"  Invalid/corrupted files: {invalid_files}")
+        if invalid_files > 10:
+            print(f"  (Only first 10 invalid files shown)")
+        print(f"{'='*70}\n")
+    
+    def __len__(self):
+        return len(self.samples)
+    
+    def __getitem__(self, idx):
+        wav_path, label, tone_name, tts_model = self.samples[idx]
+        
+        try:
+            # Load audio
+            waveform, sr = torchaudio.load(wav_path)
+            
+            # Resample if needed
+            if sr != self.sr:
+                resampler = torchaudio.transforms.Resample(sr, self.sr)
+                waveform = resampler(waveform)
+            
+            # Normalize length
+            target_length = int(self.sr * self.duration)
+            if waveform.shape[1] < target_length:
+                waveform = torch.nn.functional.pad(waveform, (0, target_length - waveform.shape[1]))
+            else:
+                waveform = waveform[:, :target_length]
+            
+            # Convert to mono
+            if waveform.shape[0] > 1:
+                waveform = waveform.mean(dim=0, keepdim=True)
+            
+            return {
+                'waveform': waveform.squeeze(0),
+                'label': torch.tensor(label, dtype=torch.long),
+                'tone_name': tone_name,
+                'tts_model': tts_model
+            }
+        
+        except Exception as e:
+            # If loading fails, return a silent audio sample
+            # This should rarely happen since we pre-check files
+            print(f"\n⚠ Error loading file at runtime: {wav_path}")
+            print(f"  Error: {e}")
+            print(f"  Returning silent audio sample instead\n")
+            
+            target_length = int(self.sr * self.duration)
+            return {
+                'waveform': torch.zeros(target_length),
+                'label': torch.tensor(label, dtype=torch.long),
+                'tone_name': tone_name,
+                'tts_model': tts_model
+            }
+
+
+def create_dataloaders(dataset_dir, batch_size=32, num_workers=0, train_split=0.8):
+    """Create train and validation dataloaders"""
+    
+    dataset = LexicalSoundDataset(dataset_dir)
+    
+    # Split dataset
+    train_size = int(len(dataset) * train_split)
+    val_size = len(dataset) - train_size
+    train_dataset, val_dataset = torch.utils.data.random_split(
+        dataset, [train_size, val_size]
+    )
+    
+    # Create dataloaders
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers
+    )
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers
+    )
+    
+    return train_loader, val_loader, dataset
+
+
+# ============================================================================
+# Configuration
+# ============================================================================
+OUTPUT_DIR = 'pretrained_distribution_graphs'
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# Set device
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Using device: {device}")
+
+# Tone mapping and colors
+TONE_NAMES = ['sắc', 'huyền', 'hỏi', 'ngã', 'nặng', 'không dấu']
+
+# English names for tones with diacritic names
+TONE_ENGLISH_NAMES = {
+    'sắc': 'Rising tone',
+    'huyền': 'Falling tone',
+    'hỏi': 'Dipping tone',
+    'ngã': 'Creaky rising tone',
+    'nặng': 'Low glottalized tone',
+    'không dấu': 'Level tone'
+}
+
+TONE_COLORS = {
+    'sắc': '#e74c3c',        # Red
+    'huyền': '#2ecc71',      # Green
+    'hỏi': '#3498db',        # Blue
+    'ngã': '#f39c12',        # Orange
+    'nặng': '#9b59b6',       # Purple
+    'không dấu': '#1abc9c'   # Teal
+}
+
+
+# ============================================================================
+# Feature Extractors
+# ============================================================================
+class Wav2Vec2FeatureExtractor:
+    """Extract features using pretrained Wav2Vec2 model"""
+    
+    def __init__(self, model_name='facebook/wav2vec2-base', device='cpu'):
+        print(f"\nLoading Wav2Vec2 model: {model_name}")
+        self.device = device
+        self.model_name = model_name
+        
+        # Load processor and model
+        self.processor = Wav2Vec2Processor.from_pretrained(model_name)
+        self.model = Wav2Vec2Model.from_pretrained(model_name)
+        self.model.to(device)
+        self.model.eval()
+        
+        print("✓ Wav2Vec2 model loaded successfully!")
+    
+    def extract_features(self, waveforms, sample_rate=16000):
+        """Extract features from audio waveforms"""
+        with torch.no_grad():
+            # Convert to numpy if tensor
+            if isinstance(waveforms, torch.Tensor):
+                waveforms = waveforms.cpu().numpy()
+            
+            # Process waveforms
+            inputs = self.processor(
+                waveforms,
+                sampling_rate=sample_rate,
+                return_tensors="pt",
+                padding=True
+            )
+            
+            # Move to device
+            input_values = inputs.input_values.to(self.device)
+            
+            # Forward pass
+            outputs = self.model(input_values)
+            
+            # Get last hidden state and average pool over time
+            hidden_states = outputs.last_hidden_state
+            features = hidden_states.mean(dim=1)  # [batch_size, hidden_dim]
+            
+            return features.cpu().numpy()
+
+
+class HuBERTFeatureExtractor:
+    """Extract features using pretrained HuBERT model"""
+    
+    def __init__(self, model_name='facebook/hubert-base-ls960', device='cpu'):
+        print(f"\nLoading HuBERT model: {model_name}")
+        self.device = device
+        self.model_name = model_name
+        
+        # HuBERT uses Wav2Vec2FeatureExtractor (not Wav2Vec2Processor)
+        from transformers import Wav2Vec2FeatureExtractor
+        self.processor = Wav2Vec2FeatureExtractor.from_pretrained(model_name)
+        self.model = HubertModel.from_pretrained(model_name)
+        self.model.to(device)
+        self.model.eval()
+        
+        print("✓ HuBERT model loaded successfully!")
+    
+    def extract_features(self, waveforms, sample_rate=16000):
+        """Extract features from audio waveforms"""
+        with torch.no_grad():
+            # Convert to numpy if tensor
+            if isinstance(waveforms, torch.Tensor):
+                waveforms = waveforms.cpu().numpy()
+            
+            # Process waveforms
+            inputs = self.processor(
+                waveforms,
+                sampling_rate=sample_rate,
+                return_tensors="pt",
+                padding=True
+            )
+            
+            # Move to device
+            input_values = inputs.input_values.to(self.device)
+            
+            # Forward pass
+            outputs = self.model(input_values)
+            
+            # Get last hidden state and average pool over time
+            hidden_states = outputs.last_hidden_state
+            features = hidden_states.mean(dim=1)  # [batch_size, hidden_dim]
+            
+            return features.cpu().numpy()
+
+
+# ============================================================================
+# Feature Extraction from DataLoader
+# ============================================================================
+def extract_all_features(dataloader, extractor, max_batches=None):
+    """
+    Extract features from all samples in the dataloader
+    
+    Args:
+        dataloader: PyTorch DataLoader
+        extractor: Feature extractor instance (Wav2Vec2 or HuBERT)
+        max_batches: Maximum number of batches to process (None = all)
+    
+    Returns:
+        features: NumPy array of shape [n_samples, feature_dim]
+        labels: NumPy array of label indices
+        tone_names: List of tone names
+        tts_models: List of TTS model names
+    """
+    all_features = []
+    all_labels = []
+    all_tone_names = []
+    all_tts_models = []
+    
+    print(f"\nExtracting features from dataloader...")
+    if max_batches:
+        print(f"Processing first {max_batches} batches only")
+    
+    batch_count = 0
+    for batch in tqdm(dataloader, desc="Processing batches"):
+        if max_batches and batch_count >= max_batches:
+            break
+        
+        # Extract batch data
+        waveforms = batch['waveform']  # [batch_size, audio_length]
+        labels = batch['label']        # [batch_size]
+        tone_names = batch['tone_name']
+        tts_models = batch['tts_model']
+        
+        # Extract features
+        features = extractor.extract_features(waveforms)
+        
+        all_features.append(features)
+        all_labels.extend(labels.numpy())
+        all_tone_names.extend(tone_names)
+        all_tts_models.extend(tts_models)
+        
+        batch_count += 1
+    
+    # Concatenate all features
+    all_features = np.vstack(all_features)
+    all_labels = np.array(all_labels)
+    
+    print(f"✓ Extracted features shape: {all_features.shape}")
+    print(f"✓ Total samples: {len(all_labels)}")
+    
+    return all_features, all_labels, all_tone_names, all_tts_models
+
+
+# ============================================================================
+# t-SNE Visualization
+# ============================================================================
+def visualize_tsne(features, labels, tone_names_list, save_path, model_name=''):
+    """Visualize features using t-SNE dimensionality reduction"""
+    print(f"\nRunning t-SNE for {model_name}...")
+    
+    # Apply t-SNE
+    tsne = TSNE(
+        n_components=2,
+        perplexity=min(30, len(features) // 5),
+        n_iter=1000,
+        random_state=42,
+        verbose=0
+    )
+    
+    features_2d = tsne.fit_transform(features)
+    
+    # Create plot
+    plt.figure(figsize=(14, 10))
+    
+    # Plot each tone
+    for tone_idx, tone_name in enumerate(TONE_NAMES):
+        mask = labels == tone_idx
+        if mask.sum() == 0:
+            continue
+        
+        color = TONE_COLORS[tone_name]
+        english_name = TONE_ENGLISH_NAMES[tone_name]
+        
+        plt.scatter(
+            features_2d[mask, 0],
+            features_2d[mask, 1],
+            c=color,
+            label=english_name,
+            alpha=0.6,
+            s=40,
+            edgecolors='white',
+            linewidth=0.5
+        )
+    
+    title = f'Vietnamese Tone Distribution - t-SNE Visualization\n{model_name}'
+    plt.title(title, fontsize=16, fontweight='bold', pad=20)
+    plt.xlabel('t-SNE Dimension 1', fontsize=18)
+    plt.ylabel('t-SNE Dimension 2', fontsize=18)
+    plt.legend(title='Tone', fontsize=16, title_fontsize=16,
+               loc='best', framealpha=0.9)
+    plt.grid(True, alpha=0.3, linestyle='--')
+    plt.tight_layout()
+    
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"✓ t-SNE plot saved to: {save_path}")
+    plt.close()
+    
+    return features_2d
+
+
+def print_statistics(features, labels, model_name=''):
+    """Print feature statistics by tone"""
+    print("\n" + "=" * 70)
+    print(f"FEATURE STATISTICS BY TONE - {model_name}")
+    print("=" * 70)
+    
+    for tone_idx, tone_name in enumerate(TONE_NAMES):
+        mask = labels == tone_idx
+        if mask.sum() == 0:
+            continue
+        
+        tone_features = features[mask]
+        
+        print(f"\n{tone_name:12s}:")
+        print(f"  Samples:      {tone_features.shape[0]:6d}")
+        print(f"  Feature mean: {tone_features.mean():8.4f}")
+        print(f"  Feature std:  {tone_features.std():8.4f}")
+        print(f"  Feature min:  {tone_features.min():8.4f}")
+        print(f"  Feature max:  {tone_features.max():8.4f}")
+    
+    print("\n" + "=" * 70)
+
+
+def save_results(features, labels, tone_names, tts_models, tsne_coords, model_name=''):
+    """Save extracted features and coordinates to CSV"""
+    print(f"\nSaving results for {model_name}...")
+    
+    # Create safe filename
+    safe_model_name = model_name.replace('/', '_').replace(' ', '_').lower()
+    
+    df = pd.DataFrame({
+        'tone_label': labels,
+        'tone_name': tone_names,
+        'tts_model': tts_models,
+        'tsne_x': tsne_coords[:, 0],
+        'tsne_y': tsne_coords[:, 1]
+    })
+    
+    csv_path = os.path.join(OUTPUT_DIR, f'feature_coordinates_{safe_model_name}.csv')
+    df.to_csv(csv_path, index=False, encoding='utf-8')
+    print(f"✓ Coordinates saved to: {csv_path}")
+    
+    # Save raw features
+    features_path = os.path.join(OUTPUT_DIR, f'features_{safe_model_name}.npy')
+    np.save(features_path, features)
+    print(f"✓ Features saved to: {features_path}")
+
+
+# ============================================================================
+# Main Visualization Function
+# ============================================================================
+def visualize_pretrained_features(dataloader, max_batches=16):
+    """
+    Main function to extract and visualize features from both models
+    
+    Args:
+        dataloader: PyTorch DataLoader with audio samples
+        max_batches: Maximum number of batches to process (None = all, default = 16)
+    """
+    print("=" * 70)
+    print("VIETNAMESE TONE FEATURE DISTRIBUTION ANALYSIS")
+    print("=" * 70)
+    
+    # ========================================================================
+    # 1. Wav2Vec2 Analysis
+    # ========================================================================
+    print("\n" + "=" * 70)
+    print("ANALYZING WITH WAV2VEC2")
+    print("=" * 70)
+    
+    wav2vec_extractor = Wav2Vec2FeatureExtractor(
+        model_name='facebook/wav2vec2-base',
+        device=device
+    )
+    
+    wav2vec_features, labels, tone_names, tts_models = extract_all_features(
+        dataloader, wav2vec_extractor, max_batches
+    )
+    
+    print_statistics(wav2vec_features, labels, 'Wav2Vec2')
+    
+    wav2vec_tsne = visualize_tsne(
+        wav2vec_features, labels, tone_names,
+        os.path.join(OUTPUT_DIR, 'tsne_wav2vec2.png'),
+        'Wav2Vec2 Features'
+    )
+    
+    save_results(wav2vec_features, labels, tone_names, tts_models, 
+                 wav2vec_tsne, 'wav2vec2')
+    
+    # Clean up
+    del wav2vec_extractor
+    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    
+    # ========================================================================
+    # 2. HuBERT Analysis
+    # ========================================================================
+    print("\n" + "=" * 70)
+    print("ANALYZING WITH HUBERT")
+    print("=" * 70)
+    
+    hubert_extractor = HuBERTFeatureExtractor(
+        model_name='facebook/hubert-base-ls960',
+        device=device
+    )
+    
+    hubert_features, labels, tone_names, tts_models = extract_all_features(
+        dataloader, hubert_extractor, max_batches
+    )
+    
+    print_statistics(hubert_features, labels, 'HuBERT')
+    
+    hubert_tsne = visualize_tsne(
+        hubert_features, labels, tone_names,
+        os.path.join(OUTPUT_DIR, 'tsne_hubert.png'),
+        'HuBERT Features'
+    )
+    
+    save_results(hubert_features, labels, tone_names, tts_models, 
+                 hubert_tsne, 'hubert')
+    
+    # Clean up
+    del hubert_extractor
+    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    
+    # ========================================================================
+    # Summary
+    # ========================================================================
+    print(f"\n{'=' * 70}")
+    print("ANALYSIS COMPLETED!")
+    print("=" * 70)
+    print(f"All visualizations saved to: {OUTPUT_DIR}/")
+    print(f"\nGenerated files:")
+    print(f"  Wav2Vec2:")
+    print(f"    - tsne_wav2vec2.png")
+    print(f"    - feature_coordinates_wav2vec2.csv")
+    print(f"    - features_wav2vec2.npy")
+    print(f"  HuBERT:")
+    print(f"    - tsne_hubert.png")
+    print(f"    - feature_coordinates_hubert.csv")
+    print(f"    - features_hubert.npy")
+    print("=" * 70)
+
+
+# ============================================================================
+# Main Execution
+# ============================================================================
+if __name__ == '__main__':
+    # Configuration
+    DATASET_DIR = './dataset'
+    BATCH_SIZE = 32
+    NUM_WORKERS = 0
+    MAX_BATCHES = None  # Change to None to process all batches
+    
+    print("=" * 70)
+    print("PRETRAINED FEATURE DISTRIBUTION ANALYSIS")
+    print("=" * 70)
+    
+    # Check if dataset exists
+    if not os.path.exists(DATASET_DIR):
+        print(f"\nError: Dataset directory not found: {DATASET_DIR}")
+        print("Please make sure the dataset directory exists.")
+        exit(1)
+    
+    # Create dataloaders
+    print(f"\nLoading dataset from: {DATASET_DIR}")
+    train_loader, val_loader, dataset = create_dataloaders(
+        dataset_dir=DATASET_DIR,
+        batch_size=BATCH_SIZE,
+        num_workers=NUM_WORKERS
+    )
+    
+    print(f"Dataset size: {len(dataset)}")
+    print(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
+    
+    # Run visualization
+    visualize_pretrained_features(
+        dataloader=train_loader,
+        max_batches=MAX_BATCHES
+    )
+    
+    print("\n" + "=" * 70)
+    print("ALL DONE!")
+    print("=" * 70)
