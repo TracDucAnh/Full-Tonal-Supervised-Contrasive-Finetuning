@@ -1,4 +1,4 @@
-# This code provides a Multi-Tasks Supervised Fintuing Pipline for Tonal Representation with Wav2vec and HuBERT.
+# This code provides a Multi-Tasks Supervised Fintuing Pipeline for Tonal Representation with Wav2vec and HuBERT.
 
 Clone repo: 
 
