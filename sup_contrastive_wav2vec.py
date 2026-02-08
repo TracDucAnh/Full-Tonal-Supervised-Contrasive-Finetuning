@@ -54,7 +54,7 @@ DATASET_DIR = './dataset'
 # Training
 NUM_EPOCHS = 50
 BATCH_SIZE = 256
-TEST_BATCH_SIZE = 8  # For testing mode
+TEST_BATCH_SIZE = 16  # For testing mode
 MAX_BATCHES = None  # Set to None for full dataset, or number for testing (e.g., 8)
 NUM_WORKERS = 4
 LEARNING_RATE = 5e-5

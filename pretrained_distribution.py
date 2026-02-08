@@ -80,7 +80,7 @@ class Wav2Vec2FeatureExtractor:
         
         # Enable half precision if using CUDA (faster inference)
         if device.type == 'cuda':
-            self.model = self.model.half()
+            self.model = self.model
             print(f"✓ Model loaded on GPU with half precision (FP16)")
         
         print("✓ Wav2Vec2 model loaded successfully!")
@@ -105,7 +105,7 @@ class Wav2Vec2FeatureExtractor:
             
             # Use half precision on CUDA
             if self.device.type == 'cuda':
-                input_values = input_values.half()
+                input_values = input_values
             
             # Forward pass
             outputs = self.model(input_values)
@@ -138,7 +138,7 @@ class HuBERTFeatureExtractor:
         
         # Enable half precision if using CUDA (faster inference)
         if device.type == 'cuda':
-            self.model = self.model.half()
+            self.model = self.model
             print(f"✓ Model loaded on GPU with half precision (FP16)")
         
         print("✓ HuBERT model loaded successfully!")
@@ -163,7 +163,7 @@ class HuBERTFeatureExtractor:
             
             # Use half precision on CUDA
             if self.device.type == 'cuda':
-                input_values = input_values.half()
+                input_values = input_values
             
             # Forward pass
             outputs = self.model(input_values)
