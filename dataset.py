@@ -1,10 +1,12 @@
 import os
 import warnings
+import unicodedata
 
 import torch
 import torchaudio
 import numpy as np
 import pandas as pd
+import soundfile as sf
 
 from torch.utils.data import Dataset, DataLoader
 
@@ -37,19 +39,63 @@ class LexicalSoundDataset(Dataset):
         }
         
         self._load_samples()
+
+    @staticmethod
+    def _normalize_tone_key(name):
+        """Normalize tone folder names for robust Unicode/path matching."""
+        normalized = unicodedata.normalize('NFC', name)
+        normalized = normalized.replace('_', ' ')
+        normalized = ' '.join(normalized.split())
+        return normalized.casefold()
     
     def _is_valid_wav(self, wav_path):
         """Check if WAV file is valid and can be loaded"""
+        candidate_paths = [wav_path]
+        normalized_path = self._safe_audio_path(wav_path)
+        if normalized_path != wav_path:
+            candidate_paths.append(normalized_path)
+
+        for candidate in candidate_paths:
+            try:
+                # soundfile handles Unicode paths robustly; use it as primary metadata reader
+                info = sf.info(candidate)
+                if info.samplerate <= 0 or info.channels <= 0 or info.frames <= 0:
+                    return False
+                return True
+            except Exception:
+                # Fallback to torchaudio metadata reader if soundfile is unavailable for this file
+                try:
+                    info = torchaudio.info(candidate)
+                    if info.sample_rate <= 0 or info.num_channels <= 0:
+                        return False
+                    return True
+                except Exception:
+                    continue
+        return False
+
+    def _load_audio(self, wav_path):
+        """Load audio with a Unicode-safe fallback path."""
         try:
-            # Try to load just the metadata (fast check)
-            info = torchaudio.info(wav_path)
-            # Additional check: make sure it has valid sample rate and channels
-            if info.sample_rate <= 0 or info.num_channels <= 0:
-                return False
-            return True
-        except Exception as e:
-            # If any error occurs, the file is invalid
-            return False
+            return torchaudio.load(wav_path)
+        except Exception:
+            # soundfile returns [num_samples, num_channels] for always_2d=True
+            audio, sr = sf.read(wav_path, dtype='float32', always_2d=True)
+            waveform = torch.from_numpy(audio.T)
+            return waveform, sr
+
+    def _safe_audio_path(self, wav_path):
+        """Return NFC-normalized path string for more reliable filesystem decoding."""
+        return unicodedata.normalize('NFC', wav_path)
+
+    def _load_audio_safe(self, wav_path):
+        """Try original and NFC-normalized paths before failing."""
+        try:
+            return self._load_audio(wav_path)
+        except Exception:
+            normalized_path = self._safe_audio_path(wav_path)
+            if normalized_path != wav_path:
+                return self._load_audio(normalized_path)
+            raise
     
     def _load_samples(self):
         """Load all .wav files from TTS model folders"""
@@ -62,18 +108,28 @@ class LexicalSoundDataset(Dataset):
         # Iterate through TTS model folders (edge-tts, google-tts, etc.)
         for tts_model in os.listdir(self.dataset_dir):
             tts_path = os.path.join(self.dataset_dir, tts_model)
+            print("Detecting TTS model: ", tts_path)
             if not os.path.isdir(tts_path):
                 continue
+
+            # Build a normalized index of tone directories present on disk.
+            tone_dir_lookup = {}
+            for folder_name in os.listdir(tts_path):
+                folder_path = os.path.join(tts_path, folder_name)
+                if os.path.isdir(folder_path):
+                    tone_dir_lookup[self._normalize_tone_key(folder_name)] = folder_path
             
             # Iterate through tone folders inside each TTS model
             for tone_name, label in self.tone_map.items():
-                tone_dir = os.path.join(tts_path, tone_name)
-                if not os.path.exists(tone_dir):
+                tone_dir = tone_dir_lookup.get(self._normalize_tone_key(tone_name))
+                if not tone_dir:
+                    print("Detecting tone: ", os.path.join(tts_path, tone_name), "(not found)")
                     continue
+                print("Detecting tone: ", tone_dir)
                 
                 # Load all .wav files from tone folder
                 for filename in os.listdir(tone_dir):
-                    if filename.endswith('.wav'):
+                    if filename.lower().endswith('.wav'):
                         wav_path = os.path.join(tone_dir, filename)
                         total_files += 1
                         
@@ -103,7 +159,7 @@ class LexicalSoundDataset(Dataset):
         
         try:
             # Load audio
-            waveform, sr = torchaudio.load(wav_path)
+            waveform, sr = self._load_audio_safe(wav_path)
             
             # Resample if needed
             if sr != self.sr:

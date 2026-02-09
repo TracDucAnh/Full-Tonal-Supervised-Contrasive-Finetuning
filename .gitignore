@@ -20,25 +20,19 @@ core.*
 
 # Model / checkpoints
 *.pt
-*.pth
-*.ckpt
-*.safetensors
 
 # Arrays / serialized data
 *.npy
-*.npz
 
 # Cache
 .cache/
 cache/
 .hf_home/
 
-# Local datasets / artifacts
-dataset/
-exploration_results/
-pretrained_distribution_graphs/
-HuBERT_finetuned/
-Wav2vec_finetuned/
-Wav2Vec_finetuned/
+# Local artifacts
 __MACOSX/
 *.zip
+
+*.safetensors
+
+dataset/

@@ -1,6 +1,22 @@
 # This code is responsible for pushing the checkpoints of finetuned Wav2vec and HuBERT to HuggingFace model hub.
 import os
 from dotenv import load_dotenv
+
+# Configure writable Hugging Face cache paths before importing huggingface_hub.
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+LOCAL_HF_HOME = os.path.join(SCRIPT_DIR, ".hf_home")
+
+os.environ.setdefault("HF_HOME", LOCAL_HF_HOME)
+os.environ.setdefault("HF_HUB_CACHE", os.path.join(os.environ["HF_HOME"], "hub"))
+os.environ.setdefault("HF_ASSETS_CACHE", os.path.join(os.environ["HF_HOME"], "assets"))
+os.environ.setdefault("XDG_CACHE_HOME", os.path.join(os.environ["HF_HOME"], "xdg"))
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
+os.makedirs(os.environ["HF_HOME"], exist_ok=True)
+os.makedirs(os.environ["HF_HUB_CACHE"], exist_ok=True)
+os.makedirs(os.environ["HF_ASSETS_CACHE"], exist_ok=True)
+os.makedirs(os.environ["XDG_CACHE_HOME"], exist_ok=True)
+
 from huggingface_hub import HfApi, create_repo
 
 def main():
@@ -16,6 +32,8 @@ def main():
 
     # Initialize the API
     api = HfApi(token=hf_token)
+    print(f"[INFO] HF_HOME: {os.environ['HF_HOME']}")
+    print(f"[INFO] HF_HUB_DISABLE_XET: {os.environ.get('HF_HUB_DISABLE_XET')}")
 
     try:
         # Get user info to determine the namespace (username)
@@ -54,7 +72,7 @@ def main():
         try:
             # Create repo on Hugging Face if it doesn't exist
             # private=True creates a private repo (change to False for public)
-            create_repo(repo_id=repo_id, token=hf_token, private=True, exist_ok=True)
+            create_repo(repo_id=repo_id, token=hf_token, private=False, exist_ok=True)
             print(f"[INFO] Repo created or already exists: {repo_id}")
 
             # Upload the directory content

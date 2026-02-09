@@ -56,7 +56,7 @@ DATASET_DIR = './dataset'
 
 # Training
 NUM_EPOCHS = 50
-BATCH_SIZE = 256
+BATCH_SIZE = 512
 TEST_BATCH_SIZE = 8  # For testing mode
 MAX_BATCHES = None  # Set to None for full dataset, or number for testing (e.g., 8)
 NUM_WORKERS = 4
@@ -81,6 +81,7 @@ OUTPUT_DIR = 'HuBERT_finetuned'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(os.path.join(OUTPUT_DIR, 'checkpoints'), exist_ok=True)
 os.makedirs(os.path.join(OUTPUT_DIR, 'visualizations'), exist_ok=True)
+CLASS_WEIGHT_CACHE_PATH = os.path.join(OUTPUT_DIR, 'class_weights_cache.pt')
 
 # Tone mapping and colors
 TONE_NAMES = ['sắc', 'huyền', 'hỏi', 'ngã', 'nặng', 'không dấu']
@@ -107,7 +108,47 @@ TONE_COLORS = {
 # ============================================================================
 # Calculate Class Weights
 # ============================================================================
-def calculate_class_weights(dataset, method='inverse_freq', beta=0.9999):
+def _extract_class_counts(dataset):
+    """Extract class counts without loading audio waveforms."""
+    if hasattr(dataset, 'samples'):
+        labels = np.array([int(sample[1]) for sample in dataset.samples], dtype=np.int64)
+    else:
+        labels = []
+        for i in range(len(dataset)):
+            label = dataset[i]['label']
+            if isinstance(label, torch.Tensor):
+                label = int(label.item())
+            labels.append(int(label))
+        labels = np.array(labels, dtype=np.int64)
+
+    class_counts = np.bincount(labels, minlength=NUM_CLASSES)
+    return class_counts, int(len(labels))
+
+
+def _print_class_weight_info(class_counts, weights, method, beta):
+    print("\n" + "=" * 80)
+    print("CLASS WEIGHT INFORMATION")
+    print("=" * 80)
+    print(f"Method: {method}")
+    if method == 'effective_samples':
+        print(f"Beta: {beta}")
+    print(f"\nClass distribution and weights:")
+    print(f"{'Tone':<20} {'Count':<10} {'Percentage':<12} {'Weight':<10}")
+    print("-" * 80)
+
+    total_samples = max(int(class_counts.sum()), 1)
+    for i, tone_name in enumerate(TONE_NAMES):
+        count = int(class_counts[i])
+        percentage = count / total_samples * 100
+        weight = float(weights[i])
+        english_name = TONE_ENGLISH_NAMES[tone_name]
+        print(f"{english_name:<20} {count:<10} {percentage:>6.2f}%      {weight:>8.4f}")
+
+    print("=" * 80)
+
+
+def calculate_class_weights(dataset, method='inverse_freq', beta=0.9999,
+                            cache_path=CLASS_WEIGHT_CACHE_PATH):
     """
     Calculate class weights for handling imbalanced datasets
     
@@ -122,57 +163,83 @@ def calculate_class_weights(dataset, method='inverse_freq', beta=0.9999):
     Returns:
         torch.Tensor: Class weights
     """
-    # Count samples per class
-    labels = []
-    for i in range(len(dataset)):
-        labels.append(dataset[i]['label'])
-    
-    labels = np.array(labels)
-    class_counts = np.bincount(labels, minlength=NUM_CLASSES)
+    class_counts, total_samples = _extract_class_counts(dataset)
+
+    if cache_path and os.path.exists(cache_path):
+        try:
+            try:
+                cached = torch.load(cache_path, map_location='cpu', weights_only=False)
+            except TypeError:
+                cached = torch.load(cache_path, map_location='cpu')
+            cached_counts = np.array(cached.get('class_counts', []), dtype=np.int64)
+            cache_hit = (
+                cached.get('method') == method and
+                float(cached.get('beta', beta)) == float(beta) and
+                int(cached.get('num_classes', NUM_CLASSES)) == NUM_CLASSES and
+                cached_counts.shape[0] == NUM_CLASSES and
+                np.array_equal(cached_counts, class_counts)
+            )
+            if cache_hit:
+                print(f"Using cached class weights from: {cache_path}")
+                cached_weights = cached.get('weights')
+                if not isinstance(cached_weights, torch.Tensor):
+                    cached_weights = torch.tensor(cached_weights, dtype=torch.float32)
+                weights_np = cached_weights.cpu().numpy()
+                _print_class_weight_info(class_counts, weights_np, method, beta)
+                return cached_weights.float()
+            print("Class weight cache is stale or config changed, recalculating...")
+        except Exception as e:
+            print(f"Could not read class weight cache ({e}), recalculating...")
     
     # Calculate weights based on method
     if method == 'inverse_freq':
         # Inverse frequency: weight = 1 / frequency
-        total_samples = len(labels)
-        weights = total_samples / (NUM_CLASSES * class_counts)
+        weights = np.zeros(NUM_CLASSES, dtype=np.float64)
+        non_zero = class_counts > 0
+        weights[non_zero] = total_samples / (NUM_CLASSES * class_counts[non_zero])
         
     elif method == 'effective_samples':
         # Effective number of samples: https://arxiv.org/abs/1901.05555
         effective_num = 1.0 - np.power(beta, class_counts)
-        weights = (1.0 - beta) / effective_num
+        weights = np.zeros(NUM_CLASSES, dtype=np.float64)
+        non_zero = class_counts > 0
+        weights[non_zero] = (1.0 - beta) / effective_num[non_zero]
         
     elif method == 'balanced':
         # Sklearn-style balanced weights
-        total_samples = len(labels)
-        weights = total_samples / (NUM_CLASSES * class_counts)
+        weights = np.zeros(NUM_CLASSES, dtype=np.float64)
+        non_zero = class_counts > 0
+        weights[non_zero] = total_samples / (NUM_CLASSES * class_counts[non_zero])
         
     else:
         raise ValueError(f"Unknown weight calculation method: {method}")
     
     # Normalize weights
-    weights = weights / weights.sum() * NUM_CLASSES
-    
-    # Print weight information
-    print("\n" + "=" * 80)
-    print("CLASS WEIGHT INFORMATION")
-    print("=" * 80)
-    print(f"Method: {method}")
-    if method == 'effective_samples':
-        print(f"Beta: {beta}")
-    print(f"\nClass distribution and weights:")
-    print(f"{'Tone':<20} {'Count':<10} {'Percentage':<12} {'Weight':<10}")
-    print("-" * 80)
-    
-    for i, tone_name in enumerate(TONE_NAMES):
-        count = class_counts[i]
-        percentage = count / len(labels) * 100
-        weight = weights[i]
-        english_name = TONE_ENGLISH_NAMES[tone_name]
-        print(f"{english_name:<20} {count:<10} {percentage:>6.2f}%      {weight:>8.4f}")
-    
-    print("=" * 80)
-    
-    return torch.FloatTensor(weights)
+    if weights.sum() > 0:
+        weights = weights / weights.sum() * NUM_CLASSES
+    else:
+        weights = np.ones(NUM_CLASSES, dtype=np.float64)
+
+    _print_class_weight_info(class_counts, weights, method, beta)
+
+    weights_tensor = torch.FloatTensor(weights)
+    if cache_path:
+        try:
+            torch.save(
+                {
+                    'method': method,
+                    'beta': float(beta),
+                    'num_classes': NUM_CLASSES,
+                    'class_counts': class_counts.tolist(),
+                    'weights': weights_tensor.cpu()
+                },
+                cache_path
+            )
+            print(f"Saved class weights cache to: {cache_path}")
+        except Exception as e:
+            print(f"Could not save class weight cache ({e})")
+
+    return weights_tensor
 
 
 # ============================================================================
@@ -499,7 +566,7 @@ def plot_tsne(features, labels, epoch, save_path, title_suffix=""):
     print(f"\n  Running t-SNE on {len(labels)} samples...")
 
     perplexity = min(30, (len(labels) - 1) // 3)
-    tsne = TSNE(n_components=2, perplexity=perplexity, n_iter=1000,
+    tsne = TSNE(n_components=2, perplexity=perplexity, max_iter=1000,
                 random_state=42, verbose=0)
     features_2d = tsne.fit_transform(features)
 
@@ -551,7 +618,7 @@ def plot_tsne_with_splits(features, labels, splits, save_path, title="Full Datas
     print(f"\n  Running t-SNE on {len(labels)} samples (full dataset)...")
     
     perplexity = min(30, (len(labels) - 1) // 3)
-    tsne = TSNE(n_components=2, perplexity=perplexity, n_iter=1000,
+    tsne = TSNE(n_components=2, perplexity=perplexity, max_iter=1000,
                 random_state=42, verbose=0)
     features_2d = tsne.fit_transform(features)
     
@@ -827,7 +894,7 @@ def main():
     class_weights = None
     if USE_WEIGHTED_LOSS:
         print("\n" + "=" * 80)
-        print("CALCULATING CLASS WEIGHTS")
+        print("LOADING/CALCULATING CLASS WEIGHTS")
         print("=" * 80)
         class_weights = calculate_class_weights(
             dataset, 

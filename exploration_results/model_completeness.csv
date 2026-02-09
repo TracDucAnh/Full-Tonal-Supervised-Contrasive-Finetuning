@@ -1,0 +1,6 @@
+﻿model,total_samples,tones_present,tones_expected,tones_missing,missing_tone_list,completeness_percentage
+VieNEU-TTS,20621,6,6,0,None,100.0
+audio_espeak,20616,6,6,0,None,100.0
+audio_mms_output,19641,6,6,0,None,100.0
+edge-tts_man,19029,6,6,0,None,100.0
+edge-tts_woman,19029,6,6,0,None,100.0

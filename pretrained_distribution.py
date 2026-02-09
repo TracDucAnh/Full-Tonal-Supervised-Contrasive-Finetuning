@@ -1,6 +1,14 @@
 import os
 import warnings
 
+# Prevent OpenBLAS thread explosion (can segfault during t-SNE on high-core CPUs).
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "8")
+os.environ.setdefault("OMP_NUM_THREADS", "8")
+os.environ.setdefault("MKL_NUM_THREADS", "8")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "8")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "8")
+os.environ.setdefault("BLIS_NUM_THREADS", "8")
+
 import torch
 import torchaudio
 import numpy as np
@@ -262,7 +270,7 @@ def visualize_tsne(features, labels, tone_names_list, save_path, model_name=''):
     tsne = TSNE(
         n_components=2,
         perplexity=min(30, len(features) // 5),
-        n_iter=1000,
+        max_iter=1000,
         random_state=42,
         verbose=0
     )
@@ -462,8 +470,8 @@ def visualize_pretrained_features(dataloader, max_batches=16):
 if __name__ == '__main__':
     # Configuration
     DATASET_DIR = './dataset'
-    BATCH_SIZE = 32
-    NUM_WORKERS = 0
+    BATCH_SIZE = 256
+    NUM_WORKERS = 8
     MAX_BATCHES = None  # Change to None to process all batches
     
     print("=" * 70)

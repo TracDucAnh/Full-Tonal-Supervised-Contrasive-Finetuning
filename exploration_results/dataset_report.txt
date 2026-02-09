@@ -1,0 +1,54 @@
+================================================================================
+DATASET ANALYSIS REPORT - VIETNAMESE LEXICAL SOUND
+================================================================================
+
+1. OVERALL STATISTICS
+--------------------------------------------------------------------------------
+Total samples:            98,936
+Total lexical units:      6
+Total TTS models:         5
+Total storage size:       2668.15 MB
+Average file size:        27.62 KB
+Min/Max file size:        0.00 / 185.95 KB
+
+2. DISTRIBUTION BY LEXICAL UNIT (TONE)
+--------------------------------------------------------------------------------
+hỏi                : 3065 samples
+huyền             : 4700 samples
+không dấu        : 76036 samples
+nặng              : 5415 samples
+ngã                : 2035 samples
+sắc               : 7685 samples
+
+3. DISTRIBUTION BY TTS MODEL
+--------------------------------------------------------------------------------
+VieNEU-TTS          : 20621 samples
+audio_espeak        : 20616 samples
+audio_mms_output    : 19641 samples
+edge-tts_man        : 19029 samples
+edge-tts_woman      : 19029 samples
+
+4. MODEL COMPLETENESS ANALYSIS
+--------------------------------------------------------------------------------
+           model  total_samples  tones_present  tones_expected  tones_missing missing_tone_list  completeness_percentage
+      VieNEU-TTS          20621              6               6              0              None                    100.0
+    audio_espeak          20616              6               6              0              None                    100.0
+audio_mms_output          19641              6               6              0              None                    100.0
+    edge-tts_man          19029              6               6              0              None                    100.0
+  edge-tts_woman          19029              6               6              0              None                    100.0
+
+5. DISTRIBUTION MATRIX (Lexical Units × Models)
+--------------------------------------------------------------------------------
+model_name           VieNEU-TTS  audio_espeak  audio_mms_output  edge-tts_man  edge-tts_woman    All
+lexical_unit_folder                                                                                 
+hỏi                        613           613               613           613             613   3065
+huyền                     940           940               940           940             940   4700
+không dấu              16041         16036             15061         14449           14449  76036
+nặng                     1083          1083              1083          1083            1083   5415
+ngã                        407           407               407           407             407   2035
+sắc                      1537          1537              1537          1537            1537   7685
+All                       20621         20616             19641         19029           19029  98936
+
+================================================================================
+END OF REPORT
+================================================================================
