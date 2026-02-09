@@ -1,21 +1,44 @@
 # Python
 .venv/
+venv/
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# macOS
-.DS_Store
-
-# Env
+# Environment
 .env
 
-# Model / checkpoints (nếu có)
-*.pt
-*.ckpt
+# OS
+.DS_Store
 
-# data
+# Logs / crash dumps
+*.log
+core.*
+
+# Model / checkpoints
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Arrays / serialized data
+*.npy
+*.npz
+
+# Cache
+.cache/
+cache/
+.hf_home/
+
+# Local datasets / artifacts
 dataset/
-# exploration_results/
-# pretrained_distribution_graphs/
-# HuBERT_finetuned/
-# Wav2Vec_finetuned/
+exploration_results/
+pretrained_distribution_graphs/
+HuBERT_finetuned/
+Wav2vec_finetuned/
+Wav2Vec_finetuned/
+__MACOSX/
+*.zip
